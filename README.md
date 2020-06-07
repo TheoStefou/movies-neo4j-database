@@ -3,5 +3,6 @@
 ```shell
 $ vagrant up
 $ vagrant ssh
-$ python3 /vagrant/hello-world-py2neo.py
+$ export FLASK_APP=neo4jAPI.py
+$ flask run
 ```
