@@ -234,7 +234,7 @@ def query14(years):
     WITH p, m.release_date AS release_date
     ORDER BY release_date
     WITH p, collect(release_date) as consecutive_dates
-    WITH p, [i in range(0, size(consecutive_dates)-2) WHERE duration.between(consecutive_dates[i], consecutive_dates[i+1]).years >= $years | consecutive_dates[i]] AS result
+    WITH p, [i in range(0, size(consecutive_dates)-2) WHERE duration.between(consecutive_dates[i], consecutive_dates[i+1]).years >= $years | i] AS result
     WHERE size(result) > 0
     RETURN p.id AS id, p.name AS name
     ''').substitute(years=years)
