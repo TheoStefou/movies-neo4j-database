@@ -1,0 +1,318 @@
+#CONSTRAINTS
+
+
+CREATE CONSTRAINT movie_movie_id_unique_constraint
+ON (m:Movie)
+ASSERT m.movie_id IS UNIQUE
+
+
+
+CREATE CONSTRAINT person_id_unique_constraint
+ON (p:Person)
+ASSERT p.id IS UNIQUE
+
+
+
+CREATE CONSTRAINT user_id_unique_constraint
+ON (u:User)
+ASSERT u.id IS UNIQUE
+
+
+#INDEXES / NOT NEEDED. CREATING THE CONSTRAINTS CREATES THE INDEXES AUTOMATICALLY
+
+
+CREATE INDEX movie_movie_id_index
+FOR (m:Movie)
+ON (m.movie_id)
+
+
+
+CREATE INDEX person_id_index
+FOR (p:Person)
+ON (p.id)
+
+
+CREATE INDEX user_id_index
+FOR (u:User)
+ON (u.id)
+
+#DATA
+
+:auto USING PERIODIC COMMIT 5000
+LOAD CSV WITH HEADERS FROM 'file:///movies_metadata_parsed.csv' AS row
+WITH row
+WITH row, row.spoken_languages as spoken_languages
+WITH row, split(substring(spoken_languages, 1, size(spoken_languages)-2), ',') as spoken_languages_array
+CREATE (m:Movie
+{
+    movie_id:toInteger(row.movie_id),
+    tmdb_id:toInteger(row.tmdb_id),
+    imdb_id:row.imdb_id,
+    budget:toInteger(row.budget),
+    title:row.title,
+    original_language:row.original_language,
+    release_date:date(row.release_date),
+    revenue:toInteger(row.revenue),
+    runtime:toInteger(row.runtime),
+    tagline:row.tagline,
+    spoken_languages:spoken_languages_array
+})
+
+
+
+:auto USING PERIODIC COMMIT 5000
+LOAD CSV WITH HEADERS FROM 'file:///person.csv' AS row
+WITH row
+CREATE (p:Person {id:toInteger(row.id), name:row.name})
+
+
+
+:auto USING PERIODIC COMMIT 5000
+LOAD CSV WITH HEADERS FROM 'file:///cast.csv' AS row
+WITH row
+MATCH (p:Person {id:toInteger(row.person_id)})
+MATCH (m:Movie {movie_id:toInteger(row.movie_id)})
+CREATE (p)-[:CAST {credit_id:row.credit_id, character:row.character}]->(m)
+
+
+
+:auto USING PERIODIC COMMIT 5000
+LOAD CSV WITH HEADERS FROM 'file:///crew.csv' AS row
+WITH row
+MATCH (p:Person {id:toInteger(row.person_id)})
+MATCH (m:Movie {movie_id:toInteger(row.movie_id)})
+CREATE (p)-[:CREW {credit_id:row.credit_id, job:row.job}]->(m)
+
+
+
+:auto USING PERIODIC COMMIT 5000
+LOAD CSV WITH HEADERS FROM 'file:///ratings_small.csv' AS row
+WITH row
+MATCH (m:Movie {movie_id:toInteger(row.movieId)})
+MERGE (u:User {id:toInteger(row.userId)})
+MERGE (m)-[:RATED_BY {rating:toFloat(row.rating), timestamp:toInteger(row.timestamp)}]->(u)
+
+
+
+======================================================================================================================
+1. Find the movies (title, tagline, release date) that a particular person was part of their cast.
+======================================================================================================================
+
+MATCH (p:Person)-[r:CAST]->(m:Movie)
+WHERE p.id = $person_id
+RETURN DISTINCT m.title AS title, m.tagline AS tagline, m.release_date AS release_date
+
+======================================================================================================================
+2. Find the movies (title, tagline, release date) a particular person directed / wrote / produced. (3 methods)
+======================================================================================================================
+
+MATCH (p:Person)-[r:CREW]->(m:Movie)
+WHERE p.id = 1 AND r.job = 'Director'
+RETURN m.title AS title, m.tagline AS tagline, m.release_date AS release_date
+
+MATCH (p:Person)-[r:CREW]->(m:Movie)
+WHERE p.id = 1 AND r.job = 'Writer'
+RETURN m.title AS title, m.tagline AS tagline, m.release_date AS release_date
+
+MATCH (p:Person)-[r:CREW]->(m:Movie)
+WHERE p.id = 1 AND r.job = 'Producer'
+RETURN m.title AS title, m.tagline AS tagline, m.release_date AS release_date
+
+======================================================================================================================
+3. What characters has a particular actor embodied between a particular time range of release dates?
+======================================================================================================================
+
+MATCH (p:Person)-[r:CAST]->(m:Movie)
+WHERE p.id = 31 AND m.release_date >= date("2010-10-10") AND m.release_date <= date("2015-10-10")
+RETURN r.character AS character
+
+======================================================================================================================
+4. Find the original / spoken languages of movies that a particular person was part of their cast. (2 methods)
+======================================================================================================================
+
+MATCH (p:Person)-[r:CAST]->(m:Movie)
+WHERE p.id = 31
+RETURN DISTINCT m.original_language AS original_language
+
+MATCH (p:Person)-[r:CAST]->(m:Movie)
+WHERE p.id = 31
+UNWIND m.spoken_languages as spoken
+RETURN DISTINCT spoken AS spoken_language
+
+======================================================================================================================
+5. Find the top-K directors with regard to largest average movie runtime.
+======================================================================================================================
+
+MATCH (p:Person)-[r:CREW]->(m:Movie)
+WHERE r.job = 'Director' AND EXISTS(m.runtime)
+WITH p.id AS director_id, p.name AS director_name, AVG(m.runtime) as average_runtime
+ORDER BY average_runtime DESC
+RETURN director_id, director_name, average_runtime
+LIMIT 5
+
+======================================================================================================================
+6. Find the top-K producers with regard to largest budget / revenue. (2 methods)
+======================================================================================================================
+
+MATCH (p:Person)-[r:CREW]->(m:Movie)
+WHERE r.job = 'Producer' AND EXISTS(m.budget)
+WITH p.id AS producer_id, p.name AS producer_name, MAX(m.budget) as max_budget
+ORDER BY max_budget DESC
+RETURN producer_id, producer_name, max_budget
+LIMIT 5
+
+MATCH (p:Person)-[r:CREW]->(m:Movie)
+WHERE r.job = 'Producer' AND EXISTS(m.revenue)
+WITH p.id AS producer_id, p.name AS producer_name, MAX(m.revenue) as max_revenue
+ORDER BY max_revenue DESC
+RETURN producer_id, producer_name, max_revenue
+LIMIT 5
+
+======================================================================================================================
+7. Find the actors that have co-acted in more than one movies released in a given single year.
+======================================================================================================================
+
+MATCH (p1:Person)-[:CAST]->(m1:Movie)<-[:CAST]-(p2:Person), (p1)-[:CAST]->(m2:Movie)<-[:CAST]-(p2)
+WHERE p1.id < p2.id AND m1 <> m2 AND m1.release_date.year = 1995 AND m2.release_date.year = 1995
+RETURN DISTINCT p1.id AS id1, p1.name AS name1, p2.id AS id2, p2.name AS name2
+
+======================================================================================================================
+8. Find those that have directed and produced a movie in a particular year.
+======================================================================================================================
+
+MATCH (p1:Person)-[r1:CREW]->(m1:Movie), (p1)-[r2:CREW]->(m2:Movie)
+WHERE r1.job = 'Director' AND r2.job = 'Producer' AND m1.release_date.year = 1995 AND m2.release_date.year = 1995
+RETURN DISTINCT p1.id AS id, p1.name AS name
+
+======================================================================================================================
+9. Find those that have acted, directed and written a movie in a particular year.
+======================================================================================================================
+
+MATCH (p1:Person)-[r1:CREW]->(m1:Movie), (p1)-[r2:CREW]->(m2:Movie), (p1)-[:CAST]->(m3:Movie)
+WHERE r1.job = 'Director' AND r2.job = 'Writer' AND m1.release_date.year = 1995 AND m2.release_date.year = 1995 AND m3.release_date.year = 1995
+RETURN DISTINCT p1.id AS id, p1.name AS name
+
+======================================================================================================================
+10. Find the actors that co-acted with an actor that has acted with a given actor, but have not co-acted with the
+	given actor.
+======================================================================================================================
+
+MATCH (p1:Person)-[:CAST]->(m:Movie)<-[:CAST]-(p2:Person)
+WHERE p1.id = 1090464 AND p1 <> p2
+WITH DISTINCT p2
+MATCH (p2)-[:CAST]->(m:Movie)<-[:CAST]-(p:Person)
+WHERE p.id <> 1090464 AND p2 <> p
+WITH DISTINCT p
+MATCH (p1:Person {id: 1090464})
+WHERE NOT (p)-[:CAST]->(:Movie)<-[:CAST]-(p1)
+RETURN p.id AS id, p.name AS name
+
+======================================================================================================================
+11. Find the directors that a given actor has worked with.
+======================================================================================================================
+
+MATCH (p1:Person)-[:CREW {job: 'Director'}]->(:Movie)<-[:CAST]-(p2:Person {id: 31})
+WHERE p1 <> p2
+RETURN DISTINCT p1.id AS id, p1.name AS name
+
+======================================================================================================================
+12. Find the top-K directors that a given actor has not worked with, with regard to most co-operations with actors 
+	that the given actor has worked with.
+======================================================================================================================
+
+MATCH (p1:Person), (p2:Person {id: 31})
+WHERE NOT EXISTS ((p1)-[:CREW {job:'Director'}]->(:Movie)<-[:CAST]-(p2))
+MATCH (p1)-[:CREW {job: 'Director'}]->(:Movie)<-[:CAST]-(p3:Person)
+WHERE EXISTS ((p2)-[:CAST]->(:Movie)<-[:CAST]-(p3))
+RETURN p1.id AS id, p1.name AS name, COUNT(p3) AS num
+ORDER BY num DESC
+LIMIT 5
+
+======================================================================================================================
+13. Find the pairs of people that have directed each other in at least one movie.
+======================================================================================================================
+
+MATCH (p1:Person)-[r1:CREW]->(m1:Movie)<-[:CAST]-(p2:Person), (p2)-[r2:CREW]->(m2:Movie)<-[:CAST]-(p1)
+WHERE r1.job = 'Director' AND r2.job = 'Director' AND p1.id < p2.id
+RETURN DISTINCT p1.id AS id1, p1.name AS name1, p2.id AS id2, p2.name AS name2
+
+======================================================================================================================
+14. Find the directors of consecutively released movies with more than a given amount of years between them.
+======================================================================================================================
+
+MATCH (p:Person)-[:CREW {job : 'Director'}]->(m:Movie)
+WITH p, m.release_date AS release_date
+ORDER BY release_date
+WITH p, collect(release_date) as consecutive_dates
+WITH p, [i in range(0, size(consecutive_dates)-2) WHERE duration.between(consecutive_dates[i], consecutive_dates[i+1]).years >= 20 | consecutive_dates[i]] AS result
+WHERE size(result) > 0
+RETURN p.id AS id, p.name AS name
+
+======================================================================================================================
+15. Find the movie with the most ratings.
+======================================================================================================================
+
+MATCH (m:Movie)-[r:RATED_BY]->(u:User)
+RETURN m.movie_id AS movie_id, m.title AS title, count(r) AS num_votes
+ORDER BY num_votes DESC
+LIMIT 1
+
+
+======================================================================================================================
+16. Find the movie with the best / worst average rating. (2 methods)
+======================================================================================================================
+
+MATCH (m:Movie)-[r:RATED_BY]->(u:User)
+RETURN m.movie_id AS movie_id, m.title AS title, AVG(r.rating) AS avg_rating
+ORDER BY avg_rating DESC
+LIMIT 1	
+
+MATCH (m:Movie)-[r:RATED_BY]->(u:User)
+RETURN m.movie_id AS movie_id, m.title AS title, AVG(r.rating) AS avg_rating
+ORDER BY avg_rating
+LIMIT 1	
+
+======================================================================================================================
+17. Find the director with the best / worst average rating. (2 methods)
+======================================================================================================================
+
+MATCH (m:Movie)-[r:RATED_BY]->(u:User)
+WITH m AS mov, AVG(r.rating) AS avg_rating
+MATCH (p:Person)-[r:CREW]->(mov)
+WHERE r.job = 'Director'
+RETURN p.id AS id, p.name AS name, AVG(avg_rating) as director_avg_rating
+ORDER BY director_avg_rating DESC
+LIMIT 1
+
+MATCH (m:Movie)-[r:RATED_BY]->(u:User)
+WITH m AS mov, AVG(r.rating) AS avg_rating
+MATCH (p:Person)-[r:CREW]->(mov)
+WHERE r.job = 'Director'
+RETURN p.id AS id, p.name AS name, AVG(avg_rating) as director_avg_rating
+ORDER BY director_avg_rating
+LIMIT 1
+
+======================================================================================================================
+18. Find the pair of actors that co-acted in movies with regard to the largest count of user ratings.
+======================================================================================================================
+
+MATCH (m:Movie)-[r:RATED_BY]->(:User)
+WITH m, COUNT(r) AS num_votes
+MATCH (p1:Person)-[:CAST]->(m)<-[:CAST]-(p2:Person)
+WHERE p1.id < p2.id
+WITH p1, p2, m, num_votes
+RETURN p1.id, p1.name, p2.id, p2.name, SUM(num_votes) AS total_votes
+ORDER BY total_votes DESC
+LIMIT 1
+
+EXAMPLE FOR 18 THAT RUNS [All movies that Brad Pitt and George Clooney have co-acted. The result is their pair with 89 votes]
+
+MATCH (m:Movie)-[r:RATED_BY]->(:User)
+WHERE m.tmdb_id = 299 OR m.tmdb_id = 163 OR m.tmdb_id = 298 OR m.tmdb_id = 4944 OR m.tmdb_id = 4912
+WITH m, COUNT(r) AS num_votes
+MATCH (p1:Person)-[:CAST]->(m)<-[:CAST]-(p2:Person)
+WHERE p1.id < p2.id
+WITH p1, p2, m, num_votes
+RETURN p1.id, p1.name, p2.id, p2.name, SUM(num_votes) AS total_votes
+ORDER BY total_votes DESC
+LIMIT 1
